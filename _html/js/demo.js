@@ -1,17 +1,17 @@
 /*
-* Copyright (c) 2014-2016 Miroslav Stampar (@stamparm)
+* Copyright (c) 2014-2017 Miroslav Stampar (@stamparm)
 * See the file 'LICENSE' for copying permission
 */
 
 function getDemoCSV() {
-    return '"2015-03-10 00:16:59.893901" r2d2 100.64.0.212 46704 68.12.104.178 53 UDP IP 100.64.0.212 attacker "blocklist.de (+autoshun.org,atrack.h3x.eu)"\n' +
+    return '"2015-03-10 00:16:59.893901" r2d2 93.115.84.122 46704 68.12.104.178 53 UDP IP 93.115.84.122 attacker "blocklist.de (+autoshun.org,atrack.h3x.eu)"\n' +
     '"2015-03-10 00:16:58.893914" c3p0 69.197.148.79 46704 68.12.104.178 53 UDP IP 69.197.148.79 attacker blocklist.de\n' +
     '"2015-03-10 00:16:59.893914" r2d2 69.197.148.79 46704 68.12.104.178 53 UDP IP 69.197.148.79 attacker blocklist.de\n' +
     '"2015-03-10 00:17:33.929339" r2d2 61.240.144.66 60000 68.12.104.178 1900 UDP IP 61.240.144.66 "incoming masscan detected" autoshun.org\n' +
     '"2015-03-10 00:17:33.929327" r2d2 61.240.144.66 60000 68.12.104.178 1900 UDP IP 61.240.144.66 "incoming masscan detected" autoshun.org\n' +
     '"2015-03-10 00:17:55.491309" r2d2 199.217.116.159 5232 68.12.104.178 5060 UDP IP 199.217.116.159 "sipvicious scan" autoshun.org\n' +
     '"2015-03-10 00:17:55.491297" r2d2 199.217.116.159 5232 68.12.104.178 5060 UDP IP 199.217.116.159 "sipvicious scan" autoshun.org\n' +
-    '"2015-03-10 00:31:04.649215" r2d2 45.56.80.141 50171 68.12.104.178 8081 TCP IP 45.56.80.141 attacker cinsscore.com\n' +
+    '"2015-03-10 00:31:04.649215" r2d2 2001:4860:4860::8888 50171 2002::1 8081 TCP IP 45.56.80.141 attacker cinsscore.com\n' +
     '"2015-03-10 00:31:04.649207" r2d2 45.56.80.141 50171 68.12.104.178 8081 TCP IP 45.56.80.141 attacker cinsscore.com\n' +
     '"2015-03-10 00:35:29.020389" r2d2 68.12.104.178 48905 68.12.99.2 53 UDP DNS (tracker.coppersurfer).tk "domain (suspicious)" (static)\n' +
     '"2015-03-10 00:35:29.020391" r2d2 68.12.104.178 48905 68.12.99.2 53 UDP DNS (tracker.coppersurfer).tk "domain (suspicious)" (static)\n' +
@@ -52,7 +52,7 @@ function getDemoCSV() {
     '"2015-03-10 01:43:22.420630" r2d2 68.12.104.178 58967 81.2.199.97 53 UDP IP 81.2.199.97 "asprox (malware)" atrack.h3x.eu\n' +
     '"2015-03-10 01:43:22.420688" r2d2 68.12.104.178 58967 81.2.199.97 53 UDP IP 81.2.199.97 "asprox (malware)" atrack.h3x.eu\n' +
     '"2015-03-10 01:48:07.571953" r2d2 68.12.104.178 41787 113.108.80.138 53 UDP IP 113.108.80.138 dnspod (custom)\n' +
-    '"2015-03-10 01:48:07.571949" r2d2 68.12.104.178 41787 113.108.80.138 53 UDP IP 113.108.80.138 dnspod (custom)\n' +
+    '"2015-03-10 01:48:07.571949" r2d2 68.12.104.178 41787 113.108.80.131 53 UDP IP 113.108.80.131 foobar "(remote custom)"\n' +
     '"2015-03-10 01:56:27.269118" r2d2 115.239.248.2 6000 68.12.104.178 8080 TCP IP 115.239.248.2 "tomcat auth brute force attempt" autoshun.org\n' +
     '"2015-03-10 01:56:27.269140" r2d2 115.239.248.2 6000 68.12.104.178 8080 TCP IP 115.239.248.2 "tomcat auth brute force attempt" autoshun.org\n' +
     '"2015-03-10 02:02:33.780530" r2d2 68.12.104.178 48567 68.12.99.2 53 UDP DNS (chrisonweb.co).cc "domain (suspicious)" (static)\n' +

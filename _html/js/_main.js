@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2014-2016 Miroslav Stampar (@stamparm)
+* Copyright (c) 2014-2017 Miroslav Stampar (@stamparm)
 * See the file 'LICENSE' for copying permission
 */
 
@@ -35,13 +35,14 @@ var LONG_TRAIL_THRESHOLD = 40;
 var OTHER_COLOR = "#999";
 var THREAT_INFIX = "~>";
 var FLOOD_THREAT_PREFIX = "...";
-var DGA_THREAT_INFIX = " dga ";
+var DGA_THREAT_INFIX = " dga ";  // set by sensor (based on known DGAs)
+var DNS_EXHAUSTION_THREAT_INFIX = " dns exhaustion ";  // set by sensor
 var DATA_PARTS_DELIMITER = ", ";
 var SUSPICIOUS_THREAT_INFIX = "suspicious";
 var HEURISTIC_THREAT_INFIX = "heuristic";
 var FLOOD_UID_SUFFIX = "F0";
 var DGA_UID_SUFFIX = "D0";
-var THREAT_PIC_HASH = null; // e.g. https://robohash.org/ or https://flathash.com/
+var DNS_EXHAUSTION_UID_SUFFIX = "N0";
 var DEFAULT_STATUS_BORDER = "1px solid #a8a8a8";
 var DEFAULT_FONT_FAMILY = "Verdana, Geneva, sans-serif";
 var LOG_COLUMNS = { TIME: 0, SENSOR: 1, SRC_IP: 2, SRC_PORT: 3, DST_IP: 4, DST_PORT: 5, PROTO: 6, TYPE: 7, TRAIL: 8, INFO: 9, REFERENCE: 10 };
@@ -54,20 +55,30 @@ var SEARCH_TIP_URL = "https://duckduckgo.com/?q=${query}";
 //var SEARCH_TIP_URL = "https://www.google.com/cse?cx=011750002002865445766%3Ay5klxdomj78&ie=UTF-8&q=${query}";
 var DAY_SUFFIXES = { 1: "st", 2: "nd", 3: "rd" };
 var DOT_COLUMNS = [ LOG_COLUMNS.SENSOR, LOG_COLUMNS.SRC_PORT, LOG_COLUMNS.SRC_IP, LOG_COLUMNS.DST_IP, LOG_COLUMNS.DST_PORT, LOG_COLUMNS.TRAIL, LOG_COLUMNS.PROTO ];
+var DATA_CONDENSING_COLUMNS = [ LOG_COLUMNS.SRC_PORT, LOG_COLUMNS.DST_IP, LOG_COLUMNS.DST_PORT, LOG_COLUMNS.PROTO ];
 var SPARKLINE_COLOR = "#ff0000";
 var NONCE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 var NONCE_LENGTH = 12;
+var CHUNK_SIZE = 20 * 1024 * 1024;  // 20MB
 var CTRL_CLICK_PRESSED = false;
 var CTRL_DATES = [];
 var PREFERRED_TRAIL_COLORS = { DNS: "#3366cc", IP: "#dc3912", URL: "#ffad33", UA: "#9900cc" };
 var SEVERITY = { LOW: 1, MEDIUM: 2, HIGH: 3 };
 var SEVERITY_COLORS = { 1: "#8ba8c0", 2: "#f0ad4e", 3: "#d9534f"};
 var CHART_TOOLTIP_FORMAT = "<%= datasetLabel %>: <%= value %>";
-var INFO_SEVERITY_KEYWORDS = { "malware": SEVERITY.HIGH, "reputation": SEVERITY.LOW, "attacker": SEVERITY.LOW, "spammer": SEVERITY.LOW, "compromised": SEVERITY.LOW, "crawler": SEVERITY.LOW, "scanning": SEVERITY.LOW }
+var INFO_SEVERITY_KEYWORDS = { "malware": SEVERITY.HIGH, "ransomware": SEVERITY.HIGH, "reputation": SEVERITY.LOW, "attacker": SEVERITY.LOW, "spammer": SEVERITY.LOW, "compromised": SEVERITY.LOW, "crawler": SEVERITY.LOW, "scanning": SEVERITY.LOW }
 var STORAGE_KEY_ACTIVE_STATUS_BUTTON = "STORAGE_KEY_ACTIVE_STATUS_BUTTON";
 var COMMA_ENCODE_TRAIL_TYPES = { UA: true, URL: true};
+var TOOLTIP_FOLDING_REGEX = /([^\s]{60})/g;
+var REPLACE_SINGLE_CLOUD_WITH_BRACES = false;
 
 for (var column in LOG_COLUMNS) if (LOG_COLUMNS.hasOwnProperty(column)) LOG_COLUMNS_SIZE++;
+
+var _ = {};
+for (var i = 0; i < DATA_CONDENSING_COLUMNS.length; i++) {
+    _[DATA_CONDENSING_COLUMNS[i]] = true;
+}
+DATA_CONDENSING_COLUMNS = _;
 
 window.onkeydown = function(event) {
     CTRL_DATES.length = 0;
@@ -82,10 +93,14 @@ window.onkeyup = function(event) {
 $(document).ready(function() {
     $("#noscript").remove();
 
+    // Reference: http://tosbourn.com/a-fix-for-window-location-origin-in-internet-explorer/
+    if (!window.location.origin)
+        window.location.origin = window.location.protocol + "//" + window.location.hostname + (window.location.port ? ':' + window.location.port: '');
+
     initCalHeatmap();
     initDialogs();
 
-    Papa.RemoteChunkSize = 1024 * 1024 * 10; // 10 MB (per one chunk request)
+    Papa.RemoteChunkSize = CHUNK_SIZE; // 10 MB (per one chunk request)
 
     Chart.defaults.global.tooltipFontFamily = DEFAULT_FONT_FAMILY;
     Chart.defaults.global.tooltipTitleFontFamily = DEFAULT_FONT_FAMILY;
@@ -95,10 +110,6 @@ $(document).ready(function() {
 
     $("#header_container").sticky({ topSpacing: 0 });
     $("#graph_close").css("left", CHART_WIDTH / 2 - 11)
-
-    // Reference: http://tosbourn.com/a-fix-for-window-location-origin-in-internet-explorer/
-    if (!window.location.origin)
-        window.location.origin = window.location.protocol + "//" + window.location.hostname + (window.location.port ? ':' + window.location.port: '');
 
     init(location.origin + "/events?date=" + formatDate(new Date()), new Date());
 });
@@ -182,13 +193,13 @@ function checkAuthentication() {
             }
             else if ((response.status === 200) && (typeof response.responseText !== "undefined") && (response.responseText.length > 0)) {
                 _USER = response.responseText;
-                $("#login_link").html("ÈÄÄÂá∫ÁôªÂΩï (" + _USER + ")");
+                $("#login_link").html("◊¢œ˙");
                 $("#login_link").off("click");
                 $("#login_link").click(function() {
                     window.location.href = "logout";
                 });
             }
-            else if (document.location.origin.startsWith('http')) {
+            else if (window.location.origin.startsWith('http')) {
                 _USER = "";
                 document.title = "Maltrail (unauthorized)";
                 setTimeout(function() {
@@ -239,7 +250,7 @@ function initCalHeatmap() {
             label: {
                     position: "bottom"
             },
-            data: location.origin + "/counts?from={{d:start}}&to={{d:end}}",
+            data: window.location.origin + "/counts?from={{d:start}}&to={{d:end}}",
             highlight: [ "now" ],
             subDomainTitleFormat: {
                 empty: "No events on {date}",
@@ -256,7 +267,7 @@ function initCalHeatmap() {
                     CTRL_DATES.push(date);
                     this.highlight(CTRL_DATES);
                     if (CTRL_DATES.length === 2)
-                        query(date);
+                        query(date, CTRL_DATES[0]);
                 }
             }
         });
@@ -295,6 +306,8 @@ function isLocalAddress(ip) {
         var _ = parseInt(ip.split(".")[1]);
         return ((_ >= 16) && (_ <= 31));
     }
+    else if (ip === "::1")
+        return true;
     else
         return false;
 }
@@ -341,6 +354,7 @@ function getPercentageColor(percentage) {
 function getContrastYIQ(hexcolor){
     if (hexcolor.charAt(0) === "#")
         hexcolor = hexcolor.slice(1);
+
     var r = parseInt(hexcolor.substr(0, 2), 16);
     var g = parseInt(hexcolor.substr(2, 2), 16);
     var b = parseInt(hexcolor.substr(4, 2), 16);
@@ -374,6 +388,8 @@ function getThreatUID(threat) {  // e.g. 192.168.0.1~>shv4.no-ip.biz
         return pad(threat.hashCode().toString(16), 6).substr(0, 6) + FLOOD_UID_SUFFIX;
     else if (threat.indexOf(DGA_THREAT_INFIX) > -1)
         return pad(threat.hashCode().toString(16), 6).substr(0, 6) + DGA_UID_SUFFIX;
+    else if (threat.indexOf(DNS_EXHAUSTION_THREAT_INFIX) > -1)
+        return pad(threat.hashCode().toString(16), 6).substr(0, 6) + DNS_EXHAUSTION_UID_SUFFIX;
     else
         return pad(threat.hashCode().toString(16), 8);
 }
@@ -421,7 +437,7 @@ function init(url, from, to) {
     for (var severity in SEVERITY)
         _SEVERITY_COUNT[SEVERITY[severity]] = 0;
 
-    if (!(document.location.origin.startsWith('http'))) {
+    if (!(window.location.origin.startsWith('http'))) {
         demo = true;
 
         $(".bottom").html($(".bottom").html().replace(/ \(.+\)/, ""));
@@ -468,6 +484,7 @@ function init(url, from, to) {
         chunk: function(results) {
             var title = document.title.replace(/\s?\.\s?/g, '.');
             var parts = title.split('.');
+            var total = results.data.length;
             var _ = _CHUNK_COUNT % parts.length;
             var trailSources = { };
 
@@ -479,28 +496,33 @@ function init(url, from, to) {
             document.title = parts.join('.');
             _CHUNK_COUNT += 1;
 
-            for (var i = 0; i < results.data.length; i++) {
+            for (var i = 0; i < total; i++) {
                 var data = results.data[i];
 
-                if (data.length < LOG_COLUMNS_SIZE)
+                if (data.length !== LOG_COLUMNS_SIZE)
                     continue;
 
-                if (data[LOG_COLUMNS.TYPE] in COMMA_ENCODE_TRAIL_TYPES)
-                    data[LOG_COLUMNS.TRAIL] = data[LOG_COLUMNS.TRAIL].replace(/\,/g, "&#44;");
+                var trail = data[LOG_COLUMNS.TRAIL];
+                var type = data[LOG_COLUMNS.TYPE];
 
-                data[LOG_COLUMNS.TRAIL] = data[LOG_COLUMNS.TRAIL].replace(/\\\(/g, "&#40;").replace(/\\\)/g, "&#41;");
+                if (type.match(/^[A-Z]+$/) === null)
+                    continue;
 
-                var _ = data[LOG_COLUMNS.TRAIL].replace(/\([^)]+\)/g, "").replace(/\{[^}]+\}/g, "");
+                if (!(type in TRAIL_TYPES))
+                    TRAIL_TYPES[type] = PREFERRED_TRAIL_COLORS[type] || getHashColor(type);
+
+                if (type in COMMA_ENCODE_TRAIL_TYPES)
+                    trail = trail.replace(/\,/g, "&#44;");
+
+                trail = data[LOG_COLUMNS.TRAIL] = trail.replace(/\\\(/g, "&#40;").replace(/\\\)/g, "&#41;")
+                var _ = trail.replace(/\([^)]+\)/g, "");
 
                 if (!(_ in trailSources))
-                    trailSources[_] = { };
-
-                if (!(data[LOG_COLUMNS.TYPE] in TRAIL_TYPES))
-                    TRAIL_TYPES[data[LOG_COLUMNS.TYPE]] = PREFERRED_TRAIL_COLORS[data[LOG_COLUMNS.TYPE]] || getHashColor(data[LOG_COLUMNS.TYPE]);
+                    trailSources[_] = {};
 
                 trailSources[_][data[LOG_COLUMNS.SRC_IP]] = true;
 
-                _ +=  " (" + data[LOG_COLUMNS.TYPE] + ")";
+                _ +=  " (" + type + ")";
                 if (!(_ in _TRAILS))
                     _TRAILS[_] = 1;
                 else
@@ -513,98 +535,99 @@ function init(url, from, to) {
             }
 
             for (var i = 0; i < results.data.length; i++) {
-                var data = results.data[i], threatText, match, _;
+                var data = results.data[i], threat_text, threat_data, match, _;
 
-                if (data.length < LOG_COLUMNS_SIZE)
+                if (data.length !== LOG_COLUMNS_SIZE)
                     continue;
 
                 var time = data[LOG_COLUMNS.TIME];
+                var src_ip = data[LOG_COLUMNS.SRC_IP];
+                var type = data[LOG_COLUMNS.TYPE];
                 var info = data[LOG_COLUMNS.INFO];
                 var reference = data[LOG_COLUMNS.REFERENCE];
 
+                if (type.match(/^[A-Z]+$/) === null)
+                    continue;
+
                 _ = data[LOG_COLUMNS.TRAIL];
-                _ = charTrim(charTrim(_.replace(/\([^)]+\)/g, "").replace(/\{[^}]+\}/g, ""), ' '), '.');
+                _ = charTrim(charTrim(_.replace(/\([^)]+\)/g, ""), ' '), '.');
 
                 var flood = _ in _FLOOD_TRAILS;
                 var dga = info.indexOf(DGA_THREAT_INFIX) > -1;
+                var dns_exhaustion = info.indexOf(DNS_EXHAUSTION_THREAT_INFIX) > -1;
                 var heuristic = reference.indexOf(HEURISTIC_THREAT_INFIX) > -1;
 
-                if (flood)
-                    threatText = FLOOD_THREAT_PREFIX + THREAT_INFIX + _;
+                if (dns_exhaustion)
+                    threat_text = info + THREAT_INFIX + _;
+                else if (flood)
+                    threat_text = FLOOD_THREAT_PREFIX + THREAT_INFIX + _;
                 else if (dga)
-                    threatText = data[LOG_COLUMNS.SRC_IP] + THREAT_INFIX + info;
+                    threat_text = src_ip + THREAT_INFIX + info;
                 else if (heuristic)
-                    threatText = data[LOG_COLUMNS.SRC_IP] + THREAT_INFIX + _ + info;
+                    threat_text = src_ip + THREAT_INFIX + _ + info;
                 else
-                    threatText = data[LOG_COLUMNS.SRC_IP] + THREAT_INFIX + _;
+                    threat_text = src_ip + THREAT_INFIX + _;
 
                 _TOTAL_EVENTS += 1;
 
-                if (!(threatText in _THREATS))
-                    _THREATS[threatText] = [1, [time], time, time, data];  // count, times, minTime, maxTime, (threat)data
+                if (!(threat_text in _THREATS))
+                    threat_data = _THREATS[threat_text] = [1, [time], time, time, data];  // count, times, minTime, maxTime, (threat)data
                 else {
-                    _THREATS[threatText][0] += 1;
-                    _THREATS[threatText][1].push(time);
+                    threat_data = _THREATS[threat_text];
+                    threat_data[0] += 1;
+                    threat_data[1].push(time);
 
-                    if (time < _THREATS[threatText][2])
-                        _THREATS[threatText][2] = time;
-                    else if (time > _THREATS[threatText][3])
-                        _THREATS[threatText][3] = time;
+                    if (time < threat_data[2])
+                        threat_data[2] = time;
+                    else if (time > threat_data[3])
+                        threat_data[3] = time;
+                }
 
-                    _ = _THREATS[threatText][4];
+                _ = threat_data[4];
 
-                    for (var j = 0; j < DOT_COLUMNS.length; j++) {
-                        var column = DOT_COLUMNS[j];
-                        if (data[column] !== _[column])
-                            if (typeof _[column] === "string") {
-                                var original = _[column];
-                                var multiple = original.match(/\((.*,.*)\)/) || original.match(/([^ ,]+,[^ ]+)/);
+                for (var j = 0; j < DOT_COLUMNS.length; j++) {
+                    var column = DOT_COLUMNS[j];
+                    var condensed = (column in DATA_CONDENSING_COLUMNS) && data[column].contains(',');
+                    if (condensed || (data[column] !== _[column])) {
+                        if (typeof _[column] === "string") {
+                            var original = _[column];
+                            _[column] = {};
 
-                                _[column] = { };
-
-                                if (multiple) {
-                                    var items = multiple[1].split(',');
-
-                                    if (original.contains('('))
-                                        for (var k = 0; k < items.length; k++)
-                                            _[column]["(" + items[k] + ")" + original.replace(multiple[0], "")] = true
-                                    else
-                                        for (var k = 0; k < items.length; k++)
-                                            _[column][items[k]] = true
+                            if (condensed) {
+                                var parts = original.split(',');
+                                for (var k = 0; k < parts.length; k++) {
+                                    _[column][parts[k]] = true;
                                 }
-                                else
-                                    _[column][original.replace(/\s{[^}]+}/, "")] = true;
-                            }
-
-                            var multiple = data[column].match(/\((.*,.*)\)/) || data[column].match(/([^ ,]+,[^ ]+)/);
-
-                            if (multiple) {
-                                var items = multiple[1].split(',');
-                                if (data[column].contains('('))
-                                    for (var k = 0; k < items.length; k++)
-                                        _[column]["(" + items[k] + ")" + data[column].replace(multiple[0], "")] = true
-                                else
-                                    for (var k = 0; k < items.length; k++)
-                                        _[column][items[k]] = true
                             }
                             else
-                                _[column][data[column].replace(/\s{[^}]+}/, "")] = true;
+                                _[column][original] = true;
+                        }
+
+                        if (typeof data[column] === "string") {
+                            if (condensed) {
+                                var parts = data[column].split(',');
+                                for (var k = 0; k < parts.length; k++) {
+                                    _[column][parts[k]] = true;
+                                }
+                            }
+                            else
+                                _[column][data[column]] = true;
+                        }
                     }
                 }
 
-                _ = data[LOG_COLUMNS.SRC_IP];
-                if (!(_ in _SOURCES))
-                    _SOURCES[_] = 1;
+                if (!(src_ip in _SOURCES))
+                    _SOURCES[src_ip] = 1;
                 else
-                    _SOURCES[_] += 1;
+                    _SOURCES[src_ip] += 1;
 
-                if (!(_ in _SOURCE_EVENTS)) {
-                    _SOURCE_EVENTS[_] = {};
+                if (!(src_ip in _SOURCE_EVENTS)) {
+                    _SOURCE_EVENTS[src_ip] = {};
 
                     for (var key in TRAIL_TYPES)
-                        _SOURCE_EVENTS[_][key] = 0;
+                        _SOURCE_EVENTS[src_ip][key] = 0;
                 }
-                _SOURCE_EVENTS[_][data[LOG_COLUMNS.TYPE]] += 1;
+                _SOURCE_EVENTS[src_ip][type] += 1;
 
                 match = time.match(/(\d{4})-(\d{2})-(\d{2})\ (\d{2}):(\d{2}):(\d{2})/);
 
@@ -615,16 +638,16 @@ function init(url, from, to) {
                     if (!(hour in _HOURS)) {
                         _HOURS[hour] = {};
 
-                        for (var type in TRAIL_TYPES)
-                            _HOURS[hour][type] = 0;
+                        for (var item in TRAIL_TYPES)
+                            _HOURS[hour][item] = 0;
                     }
 
-                    _HOURS[hour][data[LOG_COLUMNS.TYPE]] += 1;
+                    _HOURS[hour][type] += 1;
 
-                    if (!(threatText in _HOURS[hour]))
-                        _HOURS[hour][threatText] = 0;
+                    if (!(threat_text in _HOURS[hour]))
+                        _HOURS[hour][threat_text] = 0;
 
-                    _HOURS[hour][threatText] += 1;
+                    _HOURS[hour][threat_text] += 1;
                 }
             }
         },
@@ -632,23 +655,23 @@ function init(url, from, to) {
             clearTimeout(PAPAPARSE_COMPLETE_TIMER);
             PAPAPARSE_COMPLETE_TIMER = setTimeout(function() {
                 // threat sensor first_time last_time count src_ip src_port dst_ip dst_port proto type trail info reference tags
-                for (var threatText in _THREATS) {
-                    var threatUID = getThreatUID(threatText);
-                    var item = _THREATS[threatText];
-                    var count = item[0];
-                    var times = item[1];
-                    var minTime = item[2];
-                    var maxTime = item[3];
-                    var sparklineData = [];
-                    var data = item[4];
+                for (var threat_text in _THREATS) {
+                    var threatUID = getThreatUID(threat_text);
+                    var threat_data = _THREATS[threat_text];
+                    var count = threat_data[0];
+                    var times = threat_data[1];
+                    var minTime = threat_data[2];
+                    var maxTime = threat_data[3];
+                    var sparkline_data = [];
+                    var data = threat_data[4];
                     var row = [];
                     var severity = SEVERITY.MEDIUM;
 
-                    var storedLocally = $.jStorage.get(threatUID);
+                    var stored_locally = $.jStorage.get(threatUID);
                     var tagData = "";
 
-                    if (storedLocally !== null)
-                        tagData = storedLocally.tagData;
+                    if (stored_locally !== null)
+                        tagData = stored_locally.tagData;
 
                     for (var i = 0; i < DOT_COLUMNS.length; i++) {
                         var column = DOT_COLUMNS[i];
@@ -656,8 +679,11 @@ function init(url, from, to) {
                         if (typeof data[column] !== "string") {
                             var _ = [];
 
-                            for (var entry in data[column])
+                            for (var entry in data[column]) {
+                                if ((column === LOG_COLUMNS.TRAIL) && (data[LOG_COLUMNS.TYPE] === "IP") && (entry.indexOf('(') === -1))
+                                    continue;
                                 _.push(entry.replace(DATA_PARTS_DELIMITER, DATA_PARTS_DELIMITER.replace(" ", "")));
+                            }
 
                             if ((column === LOG_COLUMNS.SRC_PORT) || (column === LOG_COLUMNS.DST_PORT))
                                 _.sort(function(a, b) {
@@ -695,9 +721,9 @@ function init(url, from, to) {
                     }
 
                     if ((min_ !== null) && (max_ !== null)) {
-                        var hourms = 60 * 60 * 1000;
-                        min_ = dayStart(min_ * hourms) / hourms;
-                        max_ = dayEnd(max_ * hourms) / hourms;
+                        var ms = 60 * 60 * 1000;
+                        min_ = dayStart(min_ * ms) / ms;
+                        max_ = dayEnd(max_ * ms) / ms;
 
                         for (var hour = min_; hour <= max_; hour++) {
                             if (!(hour in _HOURS))
@@ -706,7 +732,7 @@ function init(url, from, to) {
                     }
 
                     for (var hour in _HOURS)
-                        _.push([hour >>> 0, _HOURS[hour][threatText]]);
+                        _.push([hour >>> 0, _HOURS[hour][threat_text]]);
 
                     _.sort(function(a, b) {
                         a = a[0];
@@ -716,16 +742,20 @@ function init(url, from, to) {
                     });
 
                     for (var i = 0; i < 24; i++)
-                        sparklineData.push(0);
+                        sparkline_data.push(0);
 
-                    var totalDays = Math.round(_.length / 24);
+                    var total_days = Math.round(_.length / 24);
                     for (var i = 0; i < _.length; i++) {
-                        sparklineData[Math.floor(i / totalDays)] += (_[i][1] | 0);
+                        sparkline_data[Math.floor(i / total_days)] += (_[i][1] | 0);
                         //_MAX_SPARKLINE_PER_HOUR = Math.max(_MAX_SPARKLINE_PER_HOUR, _[i][1] | 0);
                     }
 
                     if (data[LOG_COLUMNS.REFERENCE].contains("(custom)"))
                         severity = SEVERITY.HIGH;
+                    else if (data[LOG_COLUMNS.REFERENCE].contains("(remote custom)"))
+                        severity = SEVERITY.HIGH;
+                    else if (data[LOG_COLUMNS.INFO].contains("potential malware site"))
+                        severity = SEVERITY.MEDIUM;
                     else if (data[LOG_COLUMNS.REFERENCE].contains("malwaredomainlist"))
                         severity = SEVERITY.HIGH;
                     else if (data[LOG_COLUMNS.INFO].contains("malware distribution"))
@@ -742,23 +772,7 @@ function init(url, from, to) {
 
                     _SEVERITY_COUNT[severity] += 1;
 
-                    row.push(threatUID);
-                    row.push(data[LOG_COLUMNS.SENSOR]);
-                    row.push(times);
-                    row.push(severity);
-                    row.push(minTime);
-                    row.push(maxTime);
-                    row.push(sparklineData.join(","));
-                    row.push(data[LOG_COLUMNS.SRC_IP]);
-                    row.push(data[LOG_COLUMNS.SRC_PORT]);
-                    row.push(data[LOG_COLUMNS.DST_IP]);
-                    row.push(data[LOG_COLUMNS.DST_PORT]);
-                    row.push(data[LOG_COLUMNS.PROTO]);
-                    row.push(data[LOG_COLUMNS.TYPE]);
-                    row.push(data[LOG_COLUMNS.TRAIL]);
-                    row.push(data[LOG_COLUMNS.INFO]);
-                    row.push(data[LOG_COLUMNS.REFERENCE]);
-                    row.push(tagData);
+                    row = [threatUID, data[LOG_COLUMNS.SENSOR], times, severity, minTime, maxTime, sparkline_data.join(","), data[LOG_COLUMNS.SRC_IP], data[LOG_COLUMNS.SRC_PORT], data[LOG_COLUMNS.DST_IP], data[LOG_COLUMNS.DST_PORT], data[LOG_COLUMNS.PROTO], data[LOG_COLUMNS.TYPE], data[LOG_COLUMNS.TRAIL], data[LOG_COLUMNS.INFO], data[LOG_COLUMNS.REFERENCE], tagData];
 
                     _DATASET.push(row);
                 }
@@ -780,7 +794,7 @@ function init(url, from, to) {
                     if (typeof from !== 'undefined') {
                         period += formatDate(from);
                         if (typeof to !== 'undefined')
-                            period += "-" + formatDate(to);
+                            period += "_" + formatDate(to);
                     }
 
                     if (document.title.indexOf("unauthorized") === -1)
@@ -807,11 +821,7 @@ function init(url, from, to) {
                 $("#main_container").children().toggleClass("hidden", false);  // Reference: http://stackoverflow.com/a/4740050
                 $(".dynamicsparkline").parent().children().toggleClass("hidden", false);
 
-                try {
-                    $.sparkline_display_visible();
-                }
-                catch(err) {
-                }
+                $.sparkline_display_visible();
 
                 $("#chart_area").empty();
 
@@ -999,7 +1009,7 @@ function copyEllipsisToClipboard(event) {
     var text = target.parent().title;
     var html = target.parent().html();
     var left = html.search(/^<[^>]*ellipsis/) !== -1;
-    var common = html.replace(/<[^>]+>/g, "");
+    var common = html.replace(/<span class="ipcat">[^<]+<\/span>/g, "").replace(/<[^>]+>/g, "");
     if (!text) {
         var tooltip = $(".ui-tooltip");
         if (tooltip.length > 0) {
@@ -1010,8 +1020,10 @@ function copyEllipsisToClipboard(event) {
                 for (var i = 0; i < _.length; i++) {
                     if (left)
                         _[i] += common;
-                    else
-                        _[i] = common + _[i];
+                    else {
+                        if (!common.endsWith(' '))
+                            _[i] = common + _[i];
+                    }
                 }
                 text = _.join(DATA_PARTS_DELIMITER);
             }
@@ -1073,23 +1085,23 @@ function initDetails() {
         bStateSave: true,
         data: _DATASET,
         columns: [
-            { "title": "Â®ÅËÉÅ", "type": "threat", "class": "center" },
-            { "title": "ÂóÖÊé¢Âô®", "class": "center" },
-            { "title": "‰∫ã‰ª∂", "type": "events", "class": "right" },
-            { "title": "‰∏•ÈáçÁ®ãÂ∫¶", "type": "severity", "class": "center" },
-            { "title": "È¶ñÊ¨°Âá∫Áé∞", "class": "center" },
-            { "title": "ÊúÄÂêéÂá∫Áé∞", "class": "center" },
-            { "title": "Ëµ∞ÂäøÂõæ", "type": "sparkline", "class": "center" },
-            { "title": "Êù•Ê∫êip", "type": "ip-address", "class": "right" },
-            { "title": "Êù•Ê∫êÁ´ØÂè£", "type": "port", "class": "center" },
-            { "title": "ÁõÆÊ†áip", "type": "ip-address", "class": "right" },
-            { "title": "ÁõÆÊ†áÁ´ØÂè£", "type": "port", "class": "center" },
-            { "title": "ÂçèËÆÆ", "class": "center" },
-            { "title": "Á±ªÂûã", "class": "center" },
-            { "title": "ËøΩË∏™", "class": "trail" },
-            { "title": "‰ø°ÊÅØ" },
-            { "title": "ÂèÇËÄÉ" },
-            { "title": "Ê†áÁ≠æ" }
+            { "title": "Õ˛–≤", "type": "threat", "class": "center" },
+            { "title": "¥´∏–∆˜", "class": "center" },
+            { "title": " ¬º˛", "type": "events", "class": "right" },
+            { "title": "—œ÷ÿ–‘", "type": "severity", "class": "center" },
+            { "title": "µ⁄“ª¥Œ≥ˆœ÷", "class": "center", "sType": "date-custom" },
+            { "title": "◊Ó∫Û“ª¥Œ≥ˆœ÷", "class": "center", "sType": "date-custom" },
+            { "title": "ªœﬂÕº", "type": "sparkline", "class": "center" },
+            { "title": "¿¥‘¥ip", "type": "ip-address", "class": "right" },
+            { "title": "¿¥‘¥port", "type": "port", "class": "center" },
+            { "title": "ƒø±Íip", "type": "ip-address", "class": "right" },
+            { "title": "ƒø±Íport", "type": "port", "class": "center" },
+            { "title": "–≠“È", "class": "center" },
+            { "title": "¿‡–Õ", "class": "center" },
+            { "title": "◊∑◊Ÿ", "class": "trail" },
+            { "title": "–≈œ¢" },
+            { "title": "œ‡πÿ–≈œ¢" },
+            { "title": "±Í«©" }
         ],
         search: {
             caseInsensitive: false
@@ -1186,7 +1198,7 @@ function initDetails() {
 
                     data = data.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-                    if ((data.indexOf(',') > -1) || ((info.indexOf(SUSPICIOUS_THREAT_INFIX) > -1) || data.length > 80) && (data.indexOf('(') > -1) || (data.length > LONG_TRAIL_THRESHOLD)) {
+                    if ((data.indexOf(',') > -1) || (data.replace(/&#\d+;/g, "|").length > LONG_TRAIL_THRESHOLD)) {
                         var common = "";
                         var title = "";
                         var left = false;
@@ -1226,7 +1238,7 @@ function initDetails() {
                         }
 
                         // Reference: https://stackoverflow.com/questions/3340802/add-line-break-within-tooltips
-                        title = title.replace(/([^\s]{50})/g, "$1&#013;");
+                        title = title.replace(TOOLTIP_FOLDING_REGEX, "$1&#10;");
 
                         common = '<span class="trail-text">' + common + '</span>';
 
@@ -1235,8 +1247,15 @@ function initDetails() {
                         else
                             data = common + "<span title=\"" + title + "\" class='ellipsis'></span>";
                     }
-                    else
+                    else {
+                        if (REPLACE_SINGLE_CLOUD_WITH_BRACES)
+                            data = data.replace('(', '{').replace(')', '}');
+
+                        if (info.contains("sinkholed"))
+                            data = data.replace('(', '').replace(')', '');
+
                         data = '<span class="trail-text">' + data + '</span>';
+                    }
 
                     return data;
                 },
@@ -1272,7 +1291,7 @@ function initDetails() {
                     for (var i = 0; i < items.length; i++)
                         if (items[i] !== "0")
                             value += 1;
-                    return "<div class='sparkline' value='" + value + "'>" + data + "</div>";
+                    return "<div class='sparkline hidden' value='" + value + "'>" + data + "</div>";
                 },
                 targets: DATATABLES_COLUMNS.SPARKLINE
             },
@@ -1323,19 +1342,20 @@ function initDetails() {
             }
         ],
         oLanguage: {
-            sLengthMenu: "ÊØèÈ°µ _MENU_ Êù°Ê∂àÊÅØ",  // Reference: http://www.sprymedia.co.uk/dataTables/example_language.html
-            sZeroRecords: "Ê≤°ÊúâÂóÖÊé¢Âà∞Á¨¶ÂêàÊù°‰ª∂ÁöÑÊµÅÈáè",
-            sInfo: "ÂÖ± <span class='details_total'>_TOTAL_</span> Êù°Â®ÅËÉÅ Á¨¨ _START_ Êù° Âà∞ _END_ ÊµÅÈáè ",
-            sInfoEmpty: "Ê≤°ÊúâÁ¨¶ÂêàÊù°‰ª∂ÁöÑËÆ∞ÂΩïÔºÅ",
-            sInfoFiltered: "(filtered from _MAX_ total threats)",
-            sSearch: "ËøáÊª§: "
+            sLengthMenu: "_MENU_ threats per page",  // Reference: http://www.sprymedia.co.uk/dataTables/example_language.html
+            sZeroRecords: "No matching threats found",
+            sInfo: "Showing _START_ to _END_ of <span class='details_total'>_TOTAL_</span> threats",
+            sInfoEmpty: "Showing 0 to 0 of <span class='details_total'>0</span> total threats",
+            sInfoFiltered: "(<span style='color: red'>filtered</span> from _MAX_ total threats)",
+            sSearchPlaceholder: "Filter",
+            sSearch: ""
         },
         dom: 'T<"clear">lfrtip',
         tableTools: {
             aButtons: [
                 {
                     sExtends: "text",
-                    sButtonText: "Ê∏ÖÈô§",
+                    sButtonText: "Clear",
                     fnClick: function (nButton, oConfig, oFlash) {
                         var table = $('#details').dataTable();
                         var settings = table.fnSettings();
@@ -1347,15 +1367,15 @@ function initDetails() {
                 "print",
                 {
                     sExtends: "collection",
-                    sButtonText: "Â∑•ÂÖ∑ÁÆ±",
+                    sButtonText: "Tools",
                     aButtons: [
                         {
                             sExtends: "text",
                             sButtonText: "Edit hosts",
                             fnClick: function ( nButton, oConfig, oFlash ) {
                                 function _initHosts() {
-                                    $('#table-hosts').editableTableWidget();
-                                    $('#table-hosts td').on('change', function(event, newValue) {
+                                    $('#table_hosts').editableTableWidget();
+                                    $('#table_hosts td').on('change', function(event, newValue) {
                                         if (event.target.cellIndex === 0)
                                             return (newValue.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/) !== null);
                                         else if (event.target.cellIndex === 1)
@@ -1363,7 +1383,7 @@ function initDetails() {
                                     });
                                 };
                                 $('<div id="dialog-hosts" title="Hosts"></div>').appendTo('body')
-                                .html('<table id="table-hosts" class="dataTable"><thead><tr class="ui-widget-header"><th>IP</th><th>Hostname</th></tr></thead><tbody><tr><td>127.0.0.1</td><td>localhost</td></tr></tbody></table>')
+                                .html('<table id="table_hosts" class="dataTable"><thead><tr class="ui-widget-header"><th>IP</th><th>Hostname</th></tr></thead><tbody><tr><td>127.0.0.1</td><td>localhost</td></tr></tbody></table>')
                                 .dialog({
                                     resizable: false,
                                     width: "auto",
@@ -1375,16 +1395,16 @@ function initDetails() {
                                             $('#dialog-hosts').remove();
                                         },
                                         Add: function() {
-                                            $('#table-hosts tr:last').after('<tr class="host"><td>&nbsp;</td><td>&nbsp;</td></tr>');
+                                            $('#table_hosts tr:last').after('<tr class="host"><td>&nbsp;</td><td>&nbsp;</td></tr>');
                                             _initHosts();
-                                            $("#table-hosts tr:last td:first").focus().click();
+                                            $("#table_hosts tr:last td:first").focus().click();
                                         }
                                     },
                                     open: function(event, ui) {
                                         _initHosts();
                                     },
                                     close: function(event, ui) {
-                                        //$('#table-hosts .host')
+                                        //$('#table_hosts .host')
                                         $(this).dialog('destroy').remove();
                                     }
                                 });
@@ -1426,12 +1446,25 @@ function initDetails() {
         },
         fnDrawCallback: function( oSettings ) {
             $(".sparkline:contains(',')").sparkline('html', { type: 'bar', barWidth: 2, barColor: SPARKLINE_COLOR, disableInteraction: false, tooltipClassname: "sparkline-tooltip" }); //, chartRangeMin: 0, chartRangeMax: _MAX_SPARKLINE_PER_HOUR });
+
+            try {
+                var sparklines = $(".sparkline");
+                (function drawSparklines() {
+                        var hidden = sparklines.filter(".hidden");
+                        hidden.filter(':lt(10)').removeClass("hidden");
+                        $.sparkline_display_visible();
+                        hidden.length && setTimeout(drawSparklines, 100);
+                    }
+                )();
+            }
+            catch(err) {
+            }
         },
         fnRowCallback: function(nRow, aData, iDisplayIndex, iDisplayIndexFull) {
             function nslookup(event, ui) {
                 var elem = $(this);
                 var html = elem.parent().html();
-                var match = html.match(/\d+\.\d+\.\d+\.\d+/);
+                var match = html.match(/\d+\.\d+\.\d+\.\d+/) || html.match(/[\w:]*:[\w:]*:[\w:]*/);
 
                 if (match !== null) {
                     var ip = match[0];
@@ -1439,7 +1472,7 @@ function initDetails() {
                     $.ajax("https://stat.ripe.net/data/dns-chain/data.json?resource=" + ip, { dataType:"jsonp", ip: ip})
                     .done(function(json) {
                         var _ = json.data.reverse_nodes[this.ip];
-                        if ((_.length === 0) || (_ === "localhost")) {
+                        if ((typeof _ === "undefined") || (_.length === 0) || (_ === "localhost")) {
                             _ = "-";
                         }
                         _ = String(_);
@@ -1479,13 +1512,6 @@ function initDetails() {
 
             $('[title]', nRow).tooltip();
 
-            if (THREAT_PIC_HASH !== null) {
-                var cell = $('td:eq(' + (DATATABLES_COLUMNS.THREAT) + ')', nRow);
-                var div = cell.find("div");
-                div[0].title = "";
-                div.tooltip({ content: "<img src='" + THREAT_PIC_HASH + div[0].innerHTML + "?size=64x64' width='64' height='64'>", position: { my: "left center", at: "right+10 top" }});
-            }
-
             $.each([DATATABLES_COLUMNS.TRAIL], function(index, value) {
                 var cell = $('td:eq(' + value + ')', nRow);
 
@@ -1517,7 +1543,7 @@ function initDetails() {
                             CHECK_IP[this.ip] = json;
                             this.cell.append(span_ip);
                             if (json.worst_asns === "true")
-                                this.cell.append($("<img src='images/blackhat.png' class='worst_asns' title='malicious ASN'>").tooltip());
+                                this.cell.append($("<span class='worst_asns' title='malicious ASN'></span>").tooltip());
                         });
                     }
                     else if (CHECK_IP[ip] !== null) {
@@ -1525,7 +1551,7 @@ function initDetails() {
                         var span_ip = $(json.ipcat.length > 0 ? "<span class='ipcat'></span>" : "<span class='ipcat hidden'></span>").html(json.ipcat);
                         cell.append(span_ip);
                         if (json.worst_asns === "true")
-                            cell.append($("<img src='images/blackhat.png' class='worst_asns' title='malicious ASN'>").tooltip());
+                            cell.append($("<span class='worst_asns' title='malicious ASN'></span>").tooltip());
                     }
                     else {
                         interval = setInterval(function(ip, cell){
@@ -1536,7 +1562,7 @@ function initDetails() {
                                     var span_ip = $(json.ipcat.length > 0 ? "<span class='ipcat'></span>" : "<span class='ipcat hidden'></span>").html(json.ipcat);
                                     cell.append(span_ip);
                                     if (json.worst_asns === "true")
-                                        cell.append($("<img src='images/blackhat.png' class='worst_asns' title='malicious ASN'>").tooltip());
+                                        cell.append($("<span class='worst_asns' title='malicious ASN'></span>").tooltip());
                                 }
                                 clearInterval(interval);
                             }
@@ -1559,7 +1585,7 @@ function initDetails() {
                 if ((html.indexOf('flag') > -1) || (html.indexOf('lan') > -1) || (html.indexOf(',') > -1) || (html.indexOf('ellipsis') > -1))
                     return false;
 
-                var match = html.match(/\d+\.\d+\.\d+\.\d+/);
+                var match = html.match(/\d+\.\d+\.\d+\.\d+/) || html.match(/[\w:]*:[\w:]*:[\w:]*/);
                 if (match === null)
                     return false;
 
@@ -1575,16 +1601,16 @@ function initDetails() {
                         .done(function(json) {
                             var span_ip = $("<span title=''/>").html(this.ip + " ");
 
-                            if ((json.data.locations.length > 0) && (json.data.locations[0].country !== "ANO")) {
+                            if ((typeof json.data.locations !== "undefined") && (json.data.locations.length > 0) && (json.data.locations[0].country !== "ANO")) {
                                 IP_COUNTRY[this.ip] = json.data.locations[0].country.toLowerCase().split('-')[0];
                                 img = '<img src="images/blank.gif" class="flag flag-' + IP_COUNTRY[this.ip] + '" title="' + IP_COUNTRY[this.ip].toUpperCase() + '">';
-                                span_ip.tooltip(options);
                             }
                             else {
                                 IP_COUNTRY[this.ip] = "unknown";
                                 img = '<img src="images/blank.gif" class="flag flag-unknown" title="UNKNOWN">';
                             }
 
+                            span_ip.tooltip(options);
                             this.cell.html("").append(span_ip).append($(img).tooltip());
                         });
                     }
@@ -1631,7 +1657,7 @@ function initDetails() {
         if (event.target.classList.contains("trail-text")) {
             clearTimeout(SEARCH_TIP_TIMER);
             SEARCH_TIP_TIMER = setTimeout(function(cell, event) {
-                if ($(".ui-tooltip").length === 0) {
+                if ((event.buttons === 0) && ($(".ui-tooltip").length === 0)) {
                     var query = cell[0].innerHTML.replace(/<span class="ipcat.+span>/g, "").replace(/<[^>]+>/g, "").replace(/[()]/g, "").split('/')[0];
                     $(".searchtip").remove();
                     $("body").append(
@@ -1652,6 +1678,11 @@ function initDetails() {
         }
     });
 
+    details.off("click", ".trail");
+    details.on("click", ".trail", function(event) {
+        clearTimeout(SEARCH_TIP_TIMER);
+    });
+
     details.off("dblclick");  // clear previous
     details.on("dblclick", "td", function (){
         var table = $('#details').dataTable();
@@ -1661,6 +1692,8 @@ function initDetails() {
             filter = $(this).find(".info-input")[0].value;
         else if ($(this).find(".time-day").length > 0)
             filter = $(this).find("div")[0].lastChild.textContent;
+        else if ($(this).find(".trail-text").length > 0)
+            filter = $(this).find(".trail-text")[0].lastChild.textContent.replace(/\([^)]+\)/g, "");
         else if ($(this).find(".duplicates").length > 0)
             filter = this.innerHTML.replace(/<span.+/g, " ").replace(/<.+?>/g, " ");
         else if (this.innerHTML.indexOf("ellipsis") > -1) {
@@ -1696,7 +1729,7 @@ function initDetails() {
             if (event.target.classList.contains("tag"))
                 appendFilter(event.target.innerHTML, event, true);
         }
-        else if (event.button === 2) {  // right mouse button
+        else if (event.button === 2) {  // right mouse button/click
             stopPropagation(event);
         }
     });
@@ -1773,7 +1806,7 @@ Object.size = function(obj) {
     return size;
 };
 
-$.fn.dataTable.ext.search.push(
+jQuery.fn.dataTableExt.afnFiltering.push(
     function(settings, data, dataIndex) {
         return true;
     }
@@ -1784,7 +1817,10 @@ jQuery.extend(jQuery.fn.dataTableExt.oSort, {
     "date-custom-pre": function ( a ) {
         var x;
         if ( $.trim(a) !== '' ) {
-            var frDatea = $.trim(a).split(' ');
+            // extract timestamp from "<div title='yyyy-mm-dd hh:mm:ss.ususus'><span class='time-day'>dd<sup>th</sup></span> hh:mm:ss</div>"
+            var frTimestamp = $.trim(a).split("'")[1];
+            
+            var frDatea = frTimestamp.split(' ');
             var frTimea = frDatea[1].split('.')[0].split(':');
             var frUseca = frDatea[1].split('.')[1];
             var frDatea2 = frDatea[0].split('-');
@@ -1954,7 +1990,7 @@ function drawInfo(type) {
         var labels = [];
         var first = true;
         var datasets = [];
-        var totalDays = Math.round(Object.size(_HOURS) / 24);
+        var total_days = Math.round(Object.size(_HOURS) / 24);
 
         for (var type in TRAIL_TYPES) {
             var _ = [];
@@ -1973,10 +2009,15 @@ function drawInfo(type) {
 
             for (var i = 0; i < _.length; i++) {
                 var date = new Date(_[i][0] * 60 * 60 * 1000);
-
                 if (first) {
-                    if (i % totalDays === 0)
-                        labels.push(pad(date.getHours(), 2) + "h");
+                    if (i % total_days === 0) {
+                        var label = "";
+                        if (total_days > 2) {
+                            label += pad(date.getFullYear(), 4) + "-" + pad(date.getMonth(), 2) + "-" + pad(date.getDate(), 2) + " ";
+                        }
+                        label += pad(date.getHours(), 2) + "h";
+                        labels.push(label);
+                    }
                     else
                         labels.push("");
                 }
@@ -2007,7 +2048,7 @@ function drawInfo(type) {
             scaleShowHorizontalLines: false, // because StackedBar doesn't show them properly
             datasetFill: false,
             bezierCurve: false,
-            pointDotRadius: Math.max(1, 5 - totalDays),
+            pointDotRadius: Math.max(1, 5 - total_days),
             //scaleShowGridLines: false
             //tooltipTemplate: "<%if (label){%><%=label.replace(/[^0-9]/, '')%>:00h-<%=label.replace(/[^0-9]/, '')%>:59h: <%}%><%= value %> events",
             tooltipTemplate: CHART_TOOLTIP_FORMAT,
@@ -2543,9 +2584,9 @@ function initVisual() {
     }
 
     if ((min_ !== null) && (max_ !== null)) {
-        var hourms = 60 * 60 * 1000;
-        min_ = dayStart(min_ * hourms) / hourms;
-        max_ = dayEnd(max_ * hourms) / hourms;
+        var ms = 60 * 60 * 1000;
+        min_ = dayStart(min_ * ms) / ms;
+        max_ = dayEnd(max_ * ms) / ms;
 
         for (var hour = min_; hour <= max_; hour++) {
             if (!(hour in _HOURS)) {
@@ -2728,9 +2769,23 @@ $(document).ready(function() {
         to = dayStart(parseDate(getParameterByName("to")));
 });
 
-function query(date) {
+function query(date1, date2) {
     var range = $("#slider").val();
-    var url = location.origin + "/events?date=" + formatDate(date);
+    if (date2 === undefined) {
+        var url = location.origin + "/events?date=" + formatDate(date1);
 
-    init(url, date);
+        init(url, date1);
+    }
+    else {
+        var d1, d2;
+        if (date1 < date2) {
+            d1 = date1; d2 = date2;
+        }
+        else {
+            d1 = date2; d2 = date1;
+        }
+        var url = location.origin + "/events?date=" + formatDate(d1) + "_" + formatDate(d2);
+
+        init(url, d1, d2);
+    }
 }
